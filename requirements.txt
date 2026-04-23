@@ -1,13 +1,17 @@
-ultralytics==8.2.27
-streamlit==1.32.0
-opencv-python-headless==4.9.0.80
-torch==2.2.2
-torchvision==0.17.2
-numpy==1.26.4
-Pillow==10.3.0
-scipy==1.13.1
-requests==2.31.0
-plotly==5.20.0
-pandas==2.2.2
-filterpy==1.4.5
-lapx==0.5.5
+# Core ML / Vision
+ultralytics>=8.2.0
+torch>=2.2.0
+torchvision>=0.17.0
+opencv-python-headless>=4.9.0.80
+
+# Dashboard
+streamlit>=1.32.0
+plotly>=5.20.0
+pandas>=2.2.0
+
+# Utilities
+numpy>=1.26.0
+Pillow>=10.3.0
+scipy>=1.13.0
+requests>=2.31.0
+filterpy>=1.4.5
