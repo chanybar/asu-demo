@@ -24,7 +24,7 @@ from utils.congestion import CongestionTracker
 from utils.overlay import draw_detections, draw_hud, build_heatmap
 
 # ── Constants ─────────────────────────────────────────────────────────────────
-MODEL_NAME      = "yolov8n.pt"
+MODEL_NAME      = "yolov8s.pt"  # Upgraded to 'small' model for better small object detection
 HEATMAP_HISTORY = 40
 LOG_DIR         = Path("logs")
 STATUS_EMOJI    = {"LOW": "🟢", "MEDIUM": "🟡", "HIGH": "🔴"}
@@ -178,10 +178,17 @@ with st.sidebar:
 
     st.markdown("---")
     st.markdown('<div class="section-title">Detection Settings</div>', unsafe_allow_html=True)
-    st.session_state.conf_threshold = st.slider("Confidence Threshold", 0.20, 0.80, 0.40, 0.05)
+    st.session_state.conf_threshold = st.slider("Confidence Threshold", 0.05, 0.80, 0.15, 0.05)
     use_tracker  = st.toggle("SORT Object Tracking", value=True)
     st.session_state.show_heatmap   = st.toggle("Density Heatmap",  value=False)
     st.session_state.show_track_ids = st.toggle("Show Track IDs (Identify Walkers)",   value=True)
+
+    # Initialize cap early so scrubber can read it
+    if st.session_state.video_cap is None or st.session_state.video_path != selected_video:
+        if st.session_state.video_cap is not None:
+            st.session_state.video_cap.release()
+        st.session_state.video_cap = cv2.VideoCapture(selected_video)
+        st.session_state.video_path = selected_video
 
     if st.session_state.video_cap is not None and st.session_state.video_cap.isOpened():
         total_frames = int(st.session_state.video_cap.get(cv2.CAP_PROP_FRAME_COUNT))
@@ -294,7 +301,7 @@ def r_status(c, status):
     c.markdown(f'<div class="status-badge status-{status.lower()}">{emoji} {status}</div>',
                unsafe_allow_html=True)
 
-def r_chart(c, df):
+def r_chart(c, df, key):
     if df.empty or len(df) < 2:
         c.info("Collecting data…"); return
     fig = go.Figure()
@@ -311,16 +318,16 @@ def r_chart(c, df):
         legend=dict(orientation="h", y=-0.2), height=240,
         xaxis=dict(showgrid=False, title="Elapsed (s)"),
         yaxis=dict(showgrid=True, gridcolor="rgba(255,255,255,.05)"))
-    c.plotly_chart(fig, use_container_width=True)
+    c.plotly_chart(fig, use_container_width=True, key=f"chart_{key}")
 
-def r_pie(c, walkers, wheeled):
+def r_pie(c, walkers, wheeled, key):
     if walkers + wheeled == 0:
         c.info("No detections yet."); return
     fig = go.Figure(go.Pie(labels=["Walkers","Wheeled"], values=[walkers, wheeled], hole=0.55,
         marker=dict(colors=["#40dc9f","#ffb830"]), textinfo="label+percent"))
     fig.update_layout(paper_bgcolor="rgba(0,0,0,0)", font=dict(color="#8892a4",size=11),
         margin=dict(l=10,r=10,t=10,b=10), showlegend=False, height=240)
-    c.plotly_chart(fig, use_container_width=True)
+    c.plotly_chart(fig, use_container_width=True, key=f"pie_{key}")
 
 
 # ── Main loop ─────────────────────────────────────────────────────────────────
@@ -385,8 +392,9 @@ if st.session_state.running:
                 [st.session_state.history_df, new_row], ignore_index=True).tail(500)
             st.session_state.frame_idx += 1
 
-            r_chart(chart_ph, st.session_state.history_df)
-            r_pie(pie_ph, walkers, wheeled)
+            if st.session_state.frame_idx % 10 == 0:
+                r_chart(chart_ph, st.session_state.history_df, st.session_state.frame_idx)
+                r_pie(pie_ph, walkers, wheeled, st.session_state.frame_idx)
 
             if metrics["status"] == "HIGH":
                 if walkers > 0 and wheeled > 0:
