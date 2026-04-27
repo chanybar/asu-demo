@@ -1,10 +1,10 @@
 """
-streamlit_app.py — ASU Mobility Vision (Streamlit Cloud entry point)
+streamlit_app.py — ASU Mobility Vision
 
-Cloud-safe version:
+Local-video version:
+  • Reads frames from local MP4 recordings (Library, OldMain, SDFC)
   • Uses pretrained YOLOv8n (auto-downloaded by ultralytics)
-  • Pulls live ASU Hayden webcam or falls back to graceful demo
-  • No local video files required
+  • Loops video when it reaches the end
 """
 
 import sys
@@ -17,10 +17,6 @@ import numpy as np
 import streamlit as st
 import plotly.graph_objects as go
 import pandas as pd
-import requests
-import urllib.request
-import ssl
-import re
 
 # ── Ensure utils is importable ────────────────────────────────────────────────
 sys.path.insert(0, str(Path(__file__).parent))
@@ -28,16 +24,21 @@ from utils.congestion import CongestionTracker
 from utils.overlay import draw_detections, draw_hud, build_heatmap
 
 # ── Constants ─────────────────────────────────────────────────────────────────
-MODEL_NAME        = "yolov8n.pt"          # downloaded automatically if absent
-ASU_STREAM_URL    = "https://view.asu.edu/tempe/hayden"
-HEATMAP_HISTORY   = 40
-LOG_DIR           = Path("logs")
-STATUS_EMOJI      = {"LOW": "🟢", "MEDIUM": "🟡", "HIGH": "🔴"}
+MODEL_NAME      = "yolov8n.pt"
+HEATMAP_HISTORY = 40
+LOG_DIR         = Path("logs")
+STATUS_EMOJI    = {"LOW": "🟢", "MEDIUM": "🟡", "HIGH": "🔴"}
 
-# Demo image URLs (ASU campus stock — used as cloud fallback)
-DEMO_IMAGE_URLS = [
-    "https://upload.wikimedia.org/wikipedia/commons/thumb/2/22/ASU_Hayden_Library.jpg/1280px-ASU_Hayden_Library.jpg",
-]
+VIDEO_DIR = Path("/Users/chandler.white/Desktop/Demo video /mobility_demo/CIS515-Project")
+
+VIDEO_OPTIONS = {
+    "🎥 Screenshot 2026 (Live Feed Sim)": "/Users/chandler.white/Desktop/Demo video /Screen Recording 2026-04-23 at 8.35.19 PM.mov",
+    "📚 Library Recording":   str(VIDEO_DIR / "Library-Recording.mp4"),
+    "📚 Library Recording 2": str(VIDEO_DIR / "Library-Recording(1).mp4"),
+    "🏛️ Old Main Recording":  str(VIDEO_DIR / "OldMain-Recording.mp4"),
+    "🏛️ Old Main Recording 2":str(VIDEO_DIR / "OldMain-Recording(1).mp4"),
+    "🏋️ SDFC Recording":      str(VIDEO_DIR / "SDFC-Recording.mp4"),
+}
 
 # ── Page config ───────────────────────────────────────────────────────────────
 st.set_page_config(
@@ -78,11 +79,14 @@ html, body, [class*="css"] { font-family: 'Inter', sans-serif; }
 def init_state():
     defaults = {
         "running": False, "model": None, "tracker": None,
-        "congestion": None, "history_df": pd.DataFrame(columns=["time","score","walkers","wheeled"]),
+        "congestion": None,
+        "history_df": pd.DataFrame(columns=["time", "score", "walkers", "wheeled"]),
         "det_history": deque(maxlen=HEATMAP_HISTORY),
         "frame_idx": 0, "start_time": None,
         "show_heatmap": False, "show_track_ids": True,
-        "conf_threshold": 0.40, "cap": None,
+        "conf_threshold": 0.40,
+        "video_cap": None,       # persistent VideoCapture
+        "video_path": None,      # which file the cap is open on
     }
     for k, v in defaults.items():
         if k not in st.session_state:
@@ -97,45 +101,31 @@ def load_model():
     return YOLO(MODEL_NAME)
 
 
-def try_live_stream(url: str):
-    """Attempt to grab one frame from ASU live stream."""
-    try:
-        ctx = ssl.create_default_context()
-        ctx.check_hostname = False
-        ctx.verify_mode = ssl.CERT_NONE
-        req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
-        with urllib.request.urlopen(req, context=ctx, timeout=8) as r:
-            html = r.read().decode("utf-8", errors="ignore")
-        for pat in [r'(https?://[^\s"\']+\.m3u8[^\s"\']*)', r'src=["\']([^"\']+\.mp4[^"\']*)["\']']:
-            m = re.findall(pat, html)
-            if m:
-                cap = cv2.VideoCapture(m[0])
-                if cap.isOpened():
-                    ret, frame = cap.read()
-                    cap.release()
-                    if ret:
-                        return frame
-    except Exception:
-        pass
-    return None
+def get_frame(video_path: str) -> np.ndarray | None:
+    """
+    Read one frame from the local video.
+    Opens / reopens VideoCapture as needed, loops at end-of-video.
+    """
+    # If the selected video changed, release the old cap
+    if st.session_state.video_path != video_path:
+        if st.session_state.video_cap is not None:
+            st.session_state.video_cap.release()
+        st.session_state.video_cap = None
+        st.session_state.video_path = video_path
 
+    # Open if not open
+    if st.session_state.video_cap is None or not st.session_state.video_cap.isOpened():
+        cap = cv2.VideoCapture(video_path)
+        if not cap.isOpened():
+            return None
+        st.session_state.video_cap = cap
 
-def get_demo_frame() -> np.ndarray | None:
-    """Return a synthetic demo frame for cloud demo mode."""
-    # Try to fetch a static demo image via requests
-    try:
-        resp = requests.get(DEMO_IMAGE_URLS[0], timeout=8)
-        arr  = np.frombuffer(resp.content, np.uint8)
-        img  = cv2.imdecode(arr, cv2.IMREAD_COLOR)
-        if img is not None:
-            return img
-    except Exception:
-        pass
-    # Last resort: generate a synthetic grey frame with text
-    frame = np.full((480, 854, 3), 30, dtype=np.uint8)
-    cv2.putText(frame, "ASU Mobility Vision — Demo Mode",
-                (60, 240), cv2.FONT_HERSHEY_SIMPLEX, 1.0, (160,160,200), 2)
-    return frame
+    ret, frame = st.session_state.video_cap.read()
+    if not ret:
+        # End of video — loop back to start
+        st.session_state.video_cap.set(cv2.CAP_PROP_POS_FRAMES, 0)
+        ret, frame = st.session_state.video_cap.read()
+    return frame if ret else None
 
 
 def process_frame(frame_bgr, model, conf, use_tracker):
@@ -146,33 +136,41 @@ def process_frame(frame_bgr, model, conf, use_tracker):
         if cls_id not in (0, 1):
             continue
         x1, y1, x2, y2 = box.xyxy[0].tolist()
-        raw_dets.append({"x1":x1,"y1":y1,"x2":x2,"y2":y2,
-                         "cls_id":cls_id,"conf":float(box.conf[0].item())})
+        raw_dets.append({"x1": x1, "y1": y1, "x2": x2, "y2": y2,
+                         "cls_id": cls_id, "conf": float(box.conf[0].item())})
     if use_tracker and st.session_state.tracker:
         display_dets = st.session_state.tracker.update(raw_dets)
     else:
         display_dets = raw_dets
 
-    walkers = sum(1 for d in display_dets if d.get("cls_id",0)==0)
-    wheeled = sum(1 for d in display_dets if d.get("cls_id",0)==1)
+    walkers = sum(1 for d in display_dets if d.get("cls_id", 0) == 0)
+    wheeled = sum(1 for d in display_dets if d.get("cls_id", 0) == 1)
     annotated = draw_detections(frame_bgr, display_dets,
                                 show_conf=True,
-                                show_track_ids=st.session_state.show_track_ids)
+                                show_track_id=st.session_state.show_track_ids)
     return annotated, walkers, wheeled, display_dets
 
 
 # ── Sidebar ───────────────────────────────────────────────────────────────────
 with st.sidebar:
     st.markdown("## 🎛️ Control Panel")
-    st.markdown('<div class="info-box">🌐 <strong>Cloud Demo</strong><br>Using pretrained YOLOv8n + ASU live stream (falls back to demo frame if stream is unavailable).</div>', unsafe_allow_html=True)
-    st.markdown("---")
 
+    st.markdown('<div class="section-title">Video Source</div>', unsafe_allow_html=True)
+    selected_label = st.selectbox(
+        "Recording",
+        options=list(VIDEO_OPTIONS.keys()),
+        index=0,
+        label_visibility="collapsed",
+    )
+    selected_video = VIDEO_OPTIONS[selected_label]
+
+    st.markdown("---")
     st.markdown('<div class="section-title">Detection Settings</div>', unsafe_allow_html=True)
     st.session_state.conf_threshold = st.slider("Confidence Threshold", 0.20, 0.80, 0.40, 0.05)
     use_tracker  = st.toggle("SORT Object Tracking", value=True)
     st.session_state.show_heatmap   = st.toggle("Density Heatmap",  value=False)
     st.session_state.show_track_ids = st.toggle("Show Track IDs",   value=True)
-    target_fps   = st.slider("Target FPS", 1, 10, 3)
+    target_fps   = st.slider("Target FPS", 1, 15, 5)
 
     st.markdown('<div class="section-title">Congestion Window</div>', unsafe_allow_html=True)
     window_sec = st.slider("Rolling Window (sec)", 10, 120, 60, 10)
@@ -197,11 +195,20 @@ with st.sidebar:
             st.session_state.running     = True
             st.session_state.start_time  = time.time()
             st.session_state.frame_idx   = 0
-            st.session_state.history_df  = pd.DataFrame(columns=["time","score","walkers","wheeled"])
+            st.session_state.history_df  = pd.DataFrame(columns=["time", "score", "walkers", "wheeled"])
             st.session_state.det_history.clear()
+            # Reset cap so it re-opens on the chosen video
+            if st.session_state.video_cap is not None:
+                st.session_state.video_cap.release()
+            st.session_state.video_cap  = None
+            st.session_state.video_path = None
     with col_stop:
         if st.button("⏹ Stop", use_container_width=True):
             st.session_state.running = False
+            if st.session_state.video_cap is not None:
+                st.session_state.video_cap.release()
+            st.session_state.video_cap  = None
+            st.session_state.video_path = None
 
     st.markdown("---")
     st.markdown("""
@@ -225,12 +232,14 @@ with st.sidebar:
 
 # ── Header ────────────────────────────────────────────────────────────────────
 st.markdown("## 🏫 ASU Mobility Vision")
-st.markdown("*Real-time pedestrian & wheeled mobility detection · Hayden Library Zone · CIS 515*")
+st.markdown("*Real-time pedestrian & wheeled mobility detection · CIS 515*")
 
 main_col, side_col = st.columns([3, 1], gap="large")
 
 with main_col:
     video_ph = st.empty()
+    st.markdown("<br>", unsafe_allow_html=True)
+    alert_ph = st.empty()
 
 with side_col:
     st.markdown('<div class="section-title">Live Counts</div>', unsafe_allow_html=True)
@@ -239,7 +248,7 @@ with side_col:
     score_ph   = st.empty()
     status_ph  = st.empty()
     st.markdown("---")
-    st.markdown('<div class="section-title">Rolling Avg & Forecast</div>', unsafe_allow_html=True)
+    st.markdown('<div class="section-title">Rolling Avg &amp; Forecast</div>', unsafe_allow_html=True)
     rolling_ph = st.empty()
     predict_ph = st.empty()
     st.markdown("---")
@@ -299,11 +308,8 @@ if st.session_state.running:
     model = st.session_state.model
     cong  = st.session_state.congestion
 
-    # Grab frame — try live stream first, fall back to demo
-    frame = try_live_stream(ASU_STREAM_URL)
-    src_label = "LIVE · ASU HAYDEN" if frame is not None else "DEMO FRAME"
-    if frame is None:
-        frame = get_demo_frame()
+    frame = get_frame(selected_video)
+    src_label = selected_label.split(" ", 1)[-1]  # strip emoji prefix
 
     if frame is not None and model is not None:
         annotated, walkers, wheeled, dets = process_frame(
@@ -349,7 +355,7 @@ if st.session_state.running:
             f'<div style="font-size:.82rem;color:#5b6a82;line-height:1.8">'
             f'⏱ {elapsed}s &nbsp;|&nbsp; 🎞 Frame #{st.session_state.frame_idx}<br>'
             f'📊 {metrics["window_size"]} samples in window<br>'
-            f'🔗 Source: {src_label}</div>', unsafe_allow_html=True)
+            f'🎬 {selected_label}</div>', unsafe_allow_html=True)
 
         new_row = pd.DataFrame([{"time": metrics["elapsed_seconds"],
                                   "score": metrics["score"],
@@ -362,14 +368,22 @@ if st.session_state.running:
         r_pie(pie_ph, walkers, wheeled)
 
         if metrics["status"] == "HIGH":
-            st.toast(f"🔴 HIGH congestion! Score: {metrics['score']}", icon="🚨")
+            if walkers > 0 and wheeled > 0:
+                alert_ph.error("⚠️ **High Congestion Zone** &nbsp;|&nbsp; 🚨 **Mixed Traffic Risk**")
+                st.toast(f"🔴 HIGH congestion & Mixed Traffic Risk! Score: {metrics['score']}", icon="🚨")
+            else:
+                alert_ph.warning("⚠️ **High Congestion Zone**")
+                st.toast(f"🔴 HIGH congestion! Score: {metrics['score']}", icon="🚨")
+        else:
+            alert_ph.empty()
 
         time.sleep(1.0 / max(target_fps, 1))
         st.rerun()
 
     else:
-        video_ph.warning("⚠️ Cannot load frame — check stream or demo fallback.")
-        time.sleep(2); st.rerun()
+        video_ph.warning("⚠️ Cannot load video frame — check that the video file exists.")
+        time.sleep(2)
+        st.rerun()
 
 else:
     video_ph.markdown("""
@@ -381,7 +395,7 @@ else:
             ASU Mobility Vision — CIS 515
         </div>
         <div style="font-size:.95rem">
-            Press <strong style="color:#a78bfa">▶ Start</strong> in the sidebar to begin real-time detection.
+            Select a recording above, then press <strong style="color:#a78bfa">▶ Start</strong>.
         </div>
     </div>""", unsafe_allow_html=True)
     for ph in [walker_ph, wheeled_ph]:
