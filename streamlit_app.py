@@ -24,7 +24,7 @@ from utils.congestion import CongestionTracker
 from utils.overlay import draw_detections, draw_hud, build_heatmap
 
 # ── Constants ─────────────────────────────────────────────────────────────────
-MODEL_NAME      = "yolov8m.pt"  # Upgraded to 'medium' model for distant object detection
+MODEL_NAME      = "yolov8s.pt"  # Small model is much faster but still accurate at high res
 HEATMAP_HISTORY = 40
 LOG_DIR         = Path("logs")
 STATUS_EMOJI    = {"LOW": "🟢", "MEDIUM": "🟡", "HIGH": "🔴"}
@@ -130,12 +130,19 @@ def get_frame(video_path: str) -> np.ndarray | None:
             ret, f = st.session_state.video_cap.read()
         frame = f
 
+    if frame is not None:
+        h, w = frame.shape[:2]
+        if w > 1280:
+            new_w = 1280
+            new_h = int(h * (new_w / w))
+            frame = cv2.resize(frame, (new_w, new_h))
+
     return frame
 
 
 def process_frame(frame_bgr, model, conf, use_tracker):
-    # Run model at high resolution (1280) to detect tiny, distant people
-    results = model(frame_bgr, conf=conf, imgsz=1280, verbose=False)[0]
+    # Run model at 1024 resolution for a good balance of speed and detecting distant people
+    results = model(frame_bgr, conf=conf, imgsz=1024, verbose=False)[0]
     raw_dets = []
     for box in results.boxes:
         cls_id = int(box.cls[0].item())
