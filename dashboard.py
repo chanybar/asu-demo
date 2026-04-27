@@ -556,3 +556,4 @@ else:
     status_badge.markdown("""
     <div class="status-badge" style="background:rgba(255,255,255,0.05);color:#5b6a82;
     border:1px solid rgba(255,255,255,0.08)">⚪ IDLE</div>""", unsafe_allow_html=True)
+ 
