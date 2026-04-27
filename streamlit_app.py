@@ -28,16 +28,24 @@ HEATMAP_HISTORY = 40
 LOG_DIR         = Path("logs")
 STATUS_EMOJI    = {"LOW": "🟢", "MEDIUM": "🟡", "HIGH": "🔴"}
 
-VIDEO_DIR = Path("/Users/chandler.white/Desktop/Demo video /mobility_demo/CIS515-Project")
+# Base directories
+CLOUD_DATA_DIR = Path(__file__).parent / "data" / "videos"
+LOCAL_VIDEO_DIR = Path("/Users/chandler.white/Desktop/Demo video /mobility_demo/CIS515-Project")
 
 VIDEO_OPTIONS = {
-    "🎥 Screenshot 2026 (Live Feed Sim)": "/Users/chandler.white/Desktop/Demo video /Screen Recording 2026-04-23 at 8.35.19 PM.mov",
-    "📚 Library Recording":   str(VIDEO_DIR / "Library-Recording.mp4"),
-    "📚 Library Recording 2": str(VIDEO_DIR / "Library-Recording(1).mp4"),
-    "🏛️ Old Main Recording":  str(VIDEO_DIR / "OldMain-Recording.mp4"),
-    "🏛️ Old Main Recording 2":str(VIDEO_DIR / "OldMain-Recording(1).mp4"),
-    "🏋️ SDFC Recording":      str(VIDEO_DIR / "SDFC-Recording.mp4"),
+    "📚 Library Demo (Cloud Friendly)": str(CLOUD_DATA_DIR / "demo_library.mp4"),
 }
+
+# If running locally on Chandler's Mac, add the full massive videos back
+if LOCAL_VIDEO_DIR.exists():
+    VIDEO_OPTIONS.update({
+        "🎥 Screenshot 2026 (Live Feed Sim)": "/Users/chandler.white/Desktop/Demo video /Screen Recording 2026-04-23 at 8.35.19 PM.mov",
+        "📚 Library Recording Full":   str(LOCAL_VIDEO_DIR / "Library-Recording.mp4"),
+        "📚 Library Recording 2": str(LOCAL_VIDEO_DIR / "Library-Recording(1).mp4"),
+        "🏛️ Old Main Recording":  str(LOCAL_VIDEO_DIR / "OldMain-Recording.mp4"),
+        "🏛️ Old Main Recording 2":str(LOCAL_VIDEO_DIR / "OldMain-Recording(1).mp4"),
+        "🏋️ SDFC Recording":      str(LOCAL_VIDEO_DIR / "SDFC-Recording.mp4"),
+    })
 
 # ── Page config ───────────────────────────────────────────────────────────────
 st.set_page_config(
