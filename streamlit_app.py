@@ -120,12 +120,24 @@ def get_frame(video_path: str) -> np.ndarray | None:
             return None
         st.session_state.video_cap = cap
 
-    ret, frame = st.session_state.video_cap.read()
-    if not ret:
-        # End of video — loop back to start
-        st.session_state.video_cap.set(cv2.CAP_PROP_POS_FRAMES, 0)
-        ret, frame = st.session_state.video_cap.read()
-    return frame if ret else None
+    frame = None
+    # Skip frames to speed up playback
+    for _ in range(5):
+        ret, f = st.session_state.video_cap.read()
+        if not ret:
+            # End of video — loop back to start
+            st.session_state.video_cap.set(cv2.CAP_PROP_POS_FRAMES, 0)
+            ret, f = st.session_state.video_cap.read()
+        frame = f
+
+    if frame is not None:
+        # Resize to 800px width for much faster processing
+        h, w = frame.shape[:2]
+        new_w = 800
+        new_h = int(h * (new_w / w))
+        frame = cv2.resize(frame, (new_w, new_h))
+        
+    return frame
 
 
 def process_frame(frame_bgr, model, conf, use_tracker):
@@ -169,8 +181,16 @@ with st.sidebar:
     st.session_state.conf_threshold = st.slider("Confidence Threshold", 0.20, 0.80, 0.40, 0.05)
     use_tracker  = st.toggle("SORT Object Tracking", value=True)
     st.session_state.show_heatmap   = st.toggle("Density Heatmap",  value=False)
-    st.session_state.show_track_ids = st.toggle("Show Track IDs",   value=True)
-    target_fps   = st.slider("Target FPS", 1, 15, 5)
+    st.session_state.show_track_ids = st.toggle("Show Track IDs (Identify Walkers)",   value=True)
+
+    if st.session_state.video_cap is not None and st.session_state.video_cap.isOpened():
+        total_frames = int(st.session_state.video_cap.get(cv2.CAP_PROP_FRAME_COUNT))
+        if total_frames > 0:
+            current_frame = int(st.session_state.video_cap.get(cv2.CAP_PROP_POS_FRAMES))
+            def seek_video():
+                st.session_state.video_cap.set(cv2.CAP_PROP_POS_FRAMES, st.session_state.seek_pos)
+                st.session_state.det_history.clear()
+            st.slider("Scrub Video", 0, total_frames, current_frame, key="seek_pos", on_change=seek_video)
 
     st.markdown('<div class="section-title">Congestion Window</div>', unsafe_allow_html=True)
     window_sec = st.slider("Rolling Window (sec)", 10, 120, 60, 10)
@@ -308,82 +328,78 @@ if st.session_state.running:
     model = st.session_state.model
     cong  = st.session_state.congestion
 
-    frame = get_frame(selected_video)
-    src_label = selected_label.split(" ", 1)[-1]  # strip emoji prefix
+    while st.session_state.running:
+        frame = get_frame(selected_video)
+        src_label = selected_label.split(" ", 1)[-1]  # strip emoji prefix
 
-    if frame is not None and model is not None:
-        annotated, walkers, wheeled, dets = process_frame(
-            frame, model, st.session_state.conf_threshold, use_tracker)
+        if frame is not None and model is not None:
+            annotated, walkers, wheeled, dets = process_frame(
+                frame, model, st.session_state.conf_threshold, use_tracker)
 
-        st.session_state.det_history.append(dets)
+            st.session_state.det_history.append(dets)
 
-        if st.session_state.show_heatmap and len(st.session_state.det_history) > 5:
-            annotated = build_heatmap(annotated, list(st.session_state.det_history))
+            if st.session_state.show_heatmap and len(st.session_state.det_history) > 5:
+                annotated = build_heatmap(annotated, list(st.session_state.det_history))
 
-        metrics  = cong.update(walkers, wheeled)
-        annotated = draw_hud(annotated, walkers=walkers, wheeled=wheeled,
-                             score=metrics["score"], status=metrics["status"],
-                             source_label=src_label, rolling_avg=metrics["rolling_avg_score"])
+            metrics  = cong.update(walkers, wheeled)
+            annotated = draw_hud(annotated, walkers=walkers, wheeled=wheeled,
+                                 score=metrics["score"], status=metrics["status"],
+                                 source_label=src_label, rolling_avg=metrics["rolling_avg_score"])
 
-        video_ph.image(cv2.cvtColor(annotated, cv2.COLOR_BGR2RGB),
-                       channels="RGB", use_container_width=True)
+            video_ph.image(cv2.cvtColor(annotated, cv2.COLOR_BGR2RGB),
+                           channels="RGB", use_container_width=True)
 
-        r_metric(walker_ph,  walkers, "Walkers 🚶",  "#40dc9f")
-        r_metric(wheeled_ph, wheeled, "Wheeled 🚲",  "#ffb830")
-        score_ph.markdown(f'<div class="metric-card"><div class="score-ring">{metrics["score"]}</div>'
-                          f'<div class="metric-label">Congestion Score</div></div>', unsafe_allow_html=True)
-        r_status(status_ph, metrics["status"])
+            r_metric(walker_ph,  walkers, "Walkers 🚶",  "#40dc9f")
+            r_metric(wheeled_ph, wheeled, "Wheeled 🚲",  "#ffb830")
+            score_ph.markdown(f'<div class="metric-card"><div class="score-ring">{metrics["score"]}</div>'
+                              f'<div class="metric-label">Congestion Score</div></div>', unsafe_allow_html=True)
+            r_status(status_ph, metrics["status"])
 
-        rolling_ph.markdown(
-            f'<div class="metric-card"><div style="font-size:1.8rem;font-weight:700;color:#c4b5fd">'
-            f'{metrics["rolling_avg_score"]}</div>'
-            f'<div class="metric-label">Rolling Avg ({window_sec}s)</div></div>',
-            unsafe_allow_html=True)
+            rolling_ph.markdown(
+                f'<div class="metric-card"><div style="font-size:1.8rem;font-weight:700;color:#c4b5fd">'
+                f'{metrics["rolling_avg_score"]}</div>'
+                f'<div class="metric-label">Rolling Avg ({window_sec}s)</div></div>',
+                unsafe_allow_html=True)
 
-        pred = cong.predict_congestion(300)
-        if pred["predicted_score"] is not None:
-            icon = {"increasing":"📈","decreasing":"📉","stable":"➡️"}.get(pred["trend"],"➡️")
-            predict_ph.markdown(
-                f'<div class="metric-card">'
-                f'<div style="font-size:.75rem;color:#5b6a82;text-transform:uppercase;letter-spacing:1px">5-min Forecast</div>'
-                f'<div style="font-size:1.5rem;font-weight:700;color:#f9a8d4">{pred["predicted_score"]}</div>'
-                f'<div style="font-size:.8rem;color:#8892a4">{icon} {pred["trend"].capitalize()} · {pred["predicted_status"]}</div>'
-                f'</div>', unsafe_allow_html=True)
+            pred = cong.predict_congestion(300)
+            if pred["predicted_score"] is not None:
+                icon = {"increasing":"📈","decreasing":"📉","stable":"➡️"}.get(pred["trend"],"➡️")
+                predict_ph.markdown(
+                    f'<div class="metric-card">'
+                    f'<div style="font-size:.75rem;color:#5b6a82;text-transform:uppercase;letter-spacing:1px">5-min Forecast</div>'
+                    f'<div style="font-size:1.5rem;font-weight:700;color:#f9a8d4">{pred["predicted_score"]}</div>'
+                    f'<div style="font-size:.8rem;color:#8892a4">{icon} {pred["trend"].capitalize()} · {pred["predicted_status"]}</div>'
+                    f'</div>', unsafe_allow_html=True)
 
-        elapsed = int(time.time() - (st.session_state.start_time or time.time()))
-        session_ph.markdown(
-            f'<div style="font-size:.82rem;color:#5b6a82;line-height:1.8">'
-            f'⏱ {elapsed}s &nbsp;|&nbsp; 🎞 Frame #{st.session_state.frame_idx}<br>'
-            f'📊 {metrics["window_size"]} samples in window<br>'
-            f'🎬 {selected_label}</div>', unsafe_allow_html=True)
+            elapsed = int(time.time() - (st.session_state.start_time or time.time()))
+            session_ph.markdown(
+                f'<div style="font-size:.82rem;color:#5b6a82;line-height:1.8">'
+                f'⏱ {elapsed}s &nbsp;|&nbsp; 🎞 Frame #{st.session_state.frame_idx}<br>'
+                f'📊 {metrics["window_size"]} samples in window<br>'
+                f'🎬 {selected_label}</div>', unsafe_allow_html=True)
 
-        new_row = pd.DataFrame([{"time": metrics["elapsed_seconds"],
-                                  "score": metrics["score"],
-                                  "walkers": walkers, "wheeled": wheeled}])
-        st.session_state.history_df = pd.concat(
-            [st.session_state.history_df, new_row], ignore_index=True).tail(500)
-        st.session_state.frame_idx += 1
+            new_row = pd.DataFrame([{"time": metrics["elapsed_seconds"],
+                                      "score": metrics["score"],
+                                      "walkers": walkers, "wheeled": wheeled}])
+            st.session_state.history_df = pd.concat(
+                [st.session_state.history_df, new_row], ignore_index=True).tail(500)
+            st.session_state.frame_idx += 1
 
-        r_chart(chart_ph, st.session_state.history_df)
-        r_pie(pie_ph, walkers, wheeled)
+            r_chart(chart_ph, st.session_state.history_df)
+            r_pie(pie_ph, walkers, wheeled)
 
-        if metrics["status"] == "HIGH":
-            if walkers > 0 and wheeled > 0:
-                alert_ph.error("⚠️ **High Congestion Zone** &nbsp;|&nbsp; 🚨 **Mixed Traffic Risk**")
-                st.toast(f"🔴 HIGH congestion & Mixed Traffic Risk! Score: {metrics['score']}", icon="🚨")
+            if metrics["status"] == "HIGH":
+                if walkers > 0 and wheeled > 0:
+                    alert_ph.error("⚠️ **High Congestion Zone** &nbsp;|&nbsp; 🚨 **Mixed Traffic Risk**")
+                else:
+                    alert_ph.warning("⚠️ **High Congestion Zone**")
             else:
-                alert_ph.warning("⚠️ **High Congestion Zone**")
-                st.toast(f"🔴 HIGH congestion! Score: {metrics['score']}", icon="🚨")
+                alert_ph.empty()
+
         else:
-            alert_ph.empty()
-
-        time.sleep(1.0 / max(target_fps, 1))
-        st.rerun()
-
-    else:
-        video_ph.warning("⚠️ Cannot load video frame — check that the video file exists.")
-        time.sleep(2)
-        st.rerun()
+            video_ph.warning("⚠️ Cannot load video frame — check that the video file exists.")
+            time.sleep(2)
+            break
 
 else:
     video_ph.markdown("""
