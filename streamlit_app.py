@@ -11,8 +11,22 @@ import sys
 import time
 from pathlib import Path
 from collections import deque
+import subprocess
 
-import cv2
+# --- HACK: Fix Streamlit Cloud dependency conflict for OpenCV ---
+# Ultralytics automatically installs the non-headless `opencv-python`, which 
+# crashes Streamlit Cloud (Debian) due to missing GUI libraries like libgthread.
+try:
+    import cv2
+except ImportError:
+    print("Detected headless OpenCV issue. Fixing dependencies...")
+    subprocess.check_call([sys.executable, "-m", "pip", "uninstall", "-y", "opencv-python", "opencv-python-headless"])
+    subprocess.check_call([sys.executable, "-m", "pip", "install", "opencv-python-headless"])
+    if "cv2" in sys.modules:
+        del sys.modules["cv2"]
+    import cv2
+# ---------------------------------------------------------------
+
 import numpy as np
 import streamlit as st
 import plotly.graph_objects as go
